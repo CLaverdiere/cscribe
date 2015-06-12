@@ -11,6 +11,7 @@
 #include <sys/param.h>
 
 #define TEMPO_DELTA .05
+#define TIME_DELTA 2
 
 static int max_col, max_row;
 static int quit;
@@ -26,11 +27,13 @@ struct progress_bar {
 struct song {
   int len;
   int time;
+  int mark;
   float tempo;
   char* name;
 } current_song;
 
 void seek_seconds(int);
+void set_mark(int);
 void set_tempo(float);
 void show_help();
 void show_main();
@@ -58,6 +61,12 @@ void seek_seconds(int n) {
   pbar.progress = (float) current_song.time / current_song.len;
   show_progress_bar();
   show_song_info();
+}
+
+void set_mark(int n) {
+  current_song.mark = n;
+  show_song_info();
+  show_progress_bar();
 }
 
 void set_tempo(float f) {
@@ -124,6 +133,9 @@ void show_main() {
 
   while (!quit && (ch = getch())) {
     switch(ch) {
+      case '\'':
+        seek_seconds(current_song.mark);
+        break;
       case '<':
         set_tempo(current_song.tempo - TEMPO_DELTA);
         break;
@@ -134,10 +146,13 @@ void show_main() {
         quit = 1;
         return;
       case 'j':
-        seek_seconds(current_song.time - 2);
+        seek_seconds(current_song.time - TIME_DELTA);
         break;
       case 'k':
-        seek_seconds(current_song.time + 2);
+        seek_seconds(current_song.time + TIME_DELTA);
+        break;
+      case 'm':
+        set_mark(current_song.time);
         break;
       case 'h':
         show_help();
@@ -150,6 +165,7 @@ void show_main() {
 // progress is between 0 and 1.
 void show_progress_bar() {
   int pos = 0;
+  int mark_pos = (float) current_song.mark / current_song.len * pbar.len;
 
   mvaddch(pbar.row, pbar.col, '[');
 
@@ -161,15 +177,24 @@ void show_progress_bar() {
     mvaddch(pbar.row, pbar.col+pos, ' ');
   }
 
+  if (current_song.mark != 0) {
+    mvaddch(pbar.row, pbar.col + mark_pos + 1, '*');
+  }
+
   mvaddch(pbar.row, pbar.col+pos-1, ']');
 
   refresh();
 }
 
 void show_song_info() {
-    printw_center_x(max_row / 2 - 2, max_col, basename(current_song.name));
-    printw_center_x(max_row / 2 + 2, max_col, "%d:%02d | x%.2f",
-                    current_song.time / 60, current_song.time % 60, current_song.tempo);
+  printw_center_x(max_row / 2 - 2, max_col, basename(current_song.name));
+  printw_center_x(max_row / 2 + 2, max_col, "%d:%02d | x%.2f",
+                  current_song.time / 60, current_song.time % 60, current_song.tempo);
+
+  if (current_song.mark != 0) {
+    printw_center_x(max_row / 2 + 6, max_col, "(*) mark set at %d:%02d",
+                    current_song.mark / 60, current_song.mark % 60);
+  }
 }
 
 
