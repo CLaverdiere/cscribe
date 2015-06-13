@@ -1,5 +1,5 @@
 CC=gcc
-LIBS=-lncurses
+LIBS=-lncurses -lsndfile -lportaudio -pthread
 FLAGS=-Wall -g
 
 cscribe: cscribe.c

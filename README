@@ -1,9 +1,19 @@
-cscribe - a simple command line / tui program for transcribing music.
+cscribe
+=======
+
+A simple command line / tui program for transcribing music.
+
+This is still in development.
 
 I plan to support:
+------------------
 
 - Speeding up / slowing down (retaining pitch)
 - Marking and replaying
 - Vim keybindings
 
-This is still in development.
+Resources
+---------
+
+PortAudio / libsndfile help:
+http://music.columbia.edu/pipermail/portaudio/2004-December/004064.html
