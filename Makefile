@@ -1,4 +1,4 @@
-CC=gcc
+CC=clang
 LIBS=-lncurses -lsndfile -lportaudio -pthread
 FLAGS=-Wall -g
 

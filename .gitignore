@@ -1,3 +1,6 @@
 cscribe
 *.flac
-TAGS
+*.ogg
+*TAGS
+GPATH
+cscope*
