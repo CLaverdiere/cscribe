@@ -5,6 +5,7 @@
 
 #define _GNU_SOURCE
 #define HZ 44100
+#define MILLIS 1000
 
 #include <libgen.h>
 #include <pthread.h>
@@ -64,7 +65,7 @@ void show_progress_bar();
 void show_song_info();
 
 static int max_col, max_row;
-static int quit, pa_on, curses_on;
+static int quit, in_help, pa_on, curses_on;
 static int redraw_flag;
 static char* mode_line;
 static PaError err;
@@ -133,7 +134,7 @@ void seek_mseconds(int n) {
 
   current_song.time = clamped_seconds;
 
-  audio_data.pos = (clamped_seconds / 1000) * audio_data.sf_info.samplerate;
+  audio_data.pos = (clamped_seconds / MILLIS) * audio_data.sf_info.samplerate;
   sf_seek(audio_data.sndfile, audio_data.pos, SEEK_SET);
 
   show_progress_bar();
@@ -154,6 +155,7 @@ void set_tempo(float f) {
 // Prints a help menu with all commands.
 void show_help() {
   clear();
+  in_help = 1;
 
   printw_center_x(1, max_col, "cscribe help:\n\n");
 
@@ -171,6 +173,7 @@ void show_help() {
 
   getch();
 
+  in_help = 0;
   show_main();
 }
 
@@ -196,7 +199,7 @@ void* show_main(void* args) {
 
   if (!curses_on) {
     init_curses();
-    usleep(100000);
+    usleep(100 * MILLIS);
   }
 
   // TODO We should use a separate window for the modeline.
@@ -277,15 +280,19 @@ void show_progress_bar() {
 }
 
 void show_song_info() {
-  int seconds = current_song.time / 1000;
+  int curr_seconds = current_song.time / MILLIS;
+  int mark_seconds = current_song.mark / MILLIS;
+  int total_seconds = current_song.len / MILLIS;
 
   printw_center_x(max_row / 2 - 2, max_col, basename(current_song.name));
-  printw_center_x(max_row / 2 + 2, max_col, "%d:%02d | x%.2f",
-                  seconds / 60, seconds % 60, current_song.tempo);
+  printw_center_x(max_row / 2 + 2, max_col, "%d:%02d / %d:%02d | x%.2f",
+                  curr_seconds / 60, curr_seconds % 60,
+                  total_seconds / 60, total_seconds % 60,
+                  current_song.tempo);
 
   if (current_song.mark != 0) {
     printw_center_x(max_row / 2 + 6, max_col, "(*) mark set at %d:%02d",
-                    current_song.mark / 60000, current_song.mark % 60000);
+                    mark_seconds / 60, mark_seconds % 60);
   }
 }
 
@@ -300,6 +307,8 @@ void* init_audio(void* args) {
     fprintf(stderr, "Couldn't open file %s\n", current_song.name);
     return NULL;
   }
+
+  current_song.len = MILLIS * (float) audio_data.sf_info.frames / audio_data.sf_info.samplerate;
 
   Pa_Initialize();
   pa_on = 1;
@@ -319,11 +328,15 @@ void* init_audio(void* args) {
   while (Pa_IsStreamActive(stream) == 1 && !quit) {
     Pa_Sleep(SLEEP_MILLIS_D);
     current_song.time += SLEEP_MILLIS_D;
-    show_progress_bar();
-    show_song_info();
+
+    if (!in_help) {
+      show_progress_bar();
+      show_song_info();
+    }
   }
 
   Pa_StopStream(stream);
+  quit = 1;
 
   return audio_data.sndfile;
 }
@@ -355,7 +368,6 @@ int main(int argc, char* argv[])
     char* audio_name = strdup(argv[1]);
 
     current_song.name = audio_name;
-    current_song.len = 205000; // TODO placeholder
     current_song.tempo = 1.0;
   } else {
     fprintf(stderr, "cscribe <audio_file>\n");
