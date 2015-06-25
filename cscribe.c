@@ -6,8 +6,16 @@
 // TODO configure script / AUR
 
 #define _GNU_SOURCE
+
+// Sampling rate
 #define HZ 44100
+
+// Time delta contants
 #define MILLIS 1000
+#define SLEEP_MILLIS_D 100
+#define TEMPO_D .05
+#define TIME_SKIP_D 2000
+
 
 #include <libgen.h>
 #include <pthread.h>
@@ -18,16 +26,9 @@
 #include <sys/param.h>
 #include <unistd.h>
 
-
 #include <ncurses.h>
 #include <portaudio.h>
 #include <sndfile.h>
-
-
-// Time delta contants
-#define TEMPO_D .05
-#define SLEEP_MILLIS_D 100
-#define TIME_SKIP_D 2000
 
 
 struct pa_data {
