@@ -16,6 +16,7 @@
 #include <sys/param.h>
 #include <unistd.h>
 
+
 #include <ncurses.h>
 #include <portaudio.h>
 #include <sndfile.h>
@@ -47,12 +48,18 @@ struct song {
   char* name;
 } current_song;
 
+enum {
+  PLAYING,
+  PAUSED,
+} pause_state;
+
 
 void cleanup();
 
 void* init_audio();
 void init_curses();
 
+void toggle_pause();
 void seek_mseconds(int);
 void set_mark(int);
 void set_tempo(float);
@@ -71,6 +78,7 @@ static char* mode_line;
 static PaError err;
 static PaStream *stream;
 static char* welcome_msg = "Welcome to cscribe!\n\n";
+static char* audio_states[] = {"Playing", "Paused"};
 
 static int pa_callback(const void *input_buf,
                        void *output_buf,
@@ -128,6 +136,18 @@ void printw_center_x(int row, int max_col, char* fmt, ...) {
   free(str);
 }
 
+void toggle_pause() {
+  if (Pa_IsStreamStopped(stream)) {
+    pause_state = PLAYING;
+    Pa_StartStream(stream);
+  } else {
+    pause_state = PAUSED;
+    Pa_StopStream(stream);
+  }
+
+  show_song_info();
+}
+
 // TODO use a callback?
 void seek_mseconds(int n) {
   int clamped_seconds = MIN(MAX(n, 0), current_song.len);
@@ -149,6 +169,7 @@ void set_mark(int n) {
 
 void set_tempo(float f) {
   current_song.tempo = MAX(0, f);
+  audio_data.sf_info.samplerate *= current_song.tempo;
   show_song_info();
 }
 
@@ -167,6 +188,7 @@ void show_help() {
   printw("k: Forward 2 seconds\n");
   printw("m: Create mark\n");
   printw("o: Open file\n");
+  printw("p: Pause\n");
   printw("q: Quit cscribe\n");
 
   refresh();
@@ -228,9 +250,9 @@ void* show_main(void* args) {
       case '>':
         set_tempo(current_song.tempo + TEMPO_D);
         break;
-      case 'q':
-        quit = 1;
-        return NULL;
+      case 'h':
+        show_help();
+        break;
       case 'j':
         seek_mseconds(current_song.time - TIME_SKIP_D);
         break;
@@ -240,9 +262,12 @@ void* show_main(void* args) {
       case 'm':
         set_mark(current_song.time);
         break;
-      case 'h':
-        show_help();
+      case 'p':
+        toggle_pause();
         break;
+      case 'q':
+        quit = 1;
+        return NULL;
     }
   }
 
@@ -284,7 +309,11 @@ void show_song_info() {
   int mark_seconds = current_song.mark / MILLIS;
   int total_seconds = current_song.len / MILLIS;
 
-  printw_center_x(max_row / 2 - 2, max_col, basename(current_song.name));
+  char* state_str = audio_states[pause_state];
+
+  printw_center_x(max_row / 2 - 2, max_col, "%s - %-7s",
+                  basename(current_song.name), state_str);
+
   printw_center_x(max_row / 2 + 2, max_col, "%d:%02d / %d:%02d | x%.2f",
                   curr_seconds / 60, curr_seconds % 60,
                   total_seconds / 60, total_seconds % 60,
@@ -325,13 +354,15 @@ void* init_audio(void* args) {
 
   Pa_StartStream(stream);
 
-  while (Pa_IsStreamActive(stream) == 1 && !quit) {
-    Pa_Sleep(SLEEP_MILLIS_D);
-    current_song.time += SLEEP_MILLIS_D;
+  while (!quit) {
+    if (Pa_IsStreamActive(stream) == 1) {
+      Pa_Sleep(SLEEP_MILLIS_D);
+      current_song.time += SLEEP_MILLIS_D;
 
-    if (!in_help) {
-      show_progress_bar();
-      show_song_info();
+      if (!in_help) {
+        show_progress_bar();
+        show_song_info();
+      }
     }
   }
 
@@ -371,6 +402,7 @@ int main(int argc, char* argv[])
     current_song.tempo = 1.0;
   } else {
     fprintf(stderr, "cscribe <audio_file>\n");
+    exit(1);
   }
 
   pthread_create(&audio_thread, NULL, init_audio, NULL);
