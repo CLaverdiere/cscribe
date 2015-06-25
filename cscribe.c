@@ -2,6 +2,8 @@
 
 // TODO find why some songs too loud.
 // TODO investigate how to change tempo (ffmpeg / libav)?
+// TODO add picture to README.
+// TODO configure script / AUR
 
 #define _GNU_SOURCE
 #define HZ 44100
@@ -32,7 +34,7 @@ struct pa_data {
   SNDFILE *sndfile;
   SF_INFO sf_info;
   int pos;
-} audio_data;
+} a_dat;
 
 struct progress_bar {
   int row, col;
@@ -46,7 +48,7 @@ struct song {
   int mark;
   float tempo;
   char* name;
-} current_song;
+} c_song;
 
 enum {
   PLAYING,
@@ -150,16 +152,16 @@ void toggle_pause() {
 
 // TODO use a callback?
 void seek_mseconds(int n) {
-  int clamped_seconds = MIN(MAX(n, 0), current_song.len);
+  int clamped_seconds = MIN(MAX(n, 0), c_song.len);
 
-  current_song.time = clamped_seconds;
+  c_song.time = clamped_seconds;
 
   if (pause_state == PLAYING) {
     Pa_StopStream(stream);
   }
 
-  audio_data.pos = (clamped_seconds / MILLIS) * audio_data.sf_info.samplerate;
-  sf_seek(audio_data.sndfile, audio_data.pos, SEEK_SET);
+  a_dat.pos = (clamped_seconds / MILLIS) * a_dat.sf_info.samplerate;
+  sf_seek(a_dat.sndfile, a_dat.pos, SEEK_SET);
 
   if (pause_state == PLAYING) {
     Pa_StartStream(stream);
@@ -170,14 +172,14 @@ void seek_mseconds(int n) {
 }
 
 void set_mark(int n) {
-  current_song.mark = n;
+  c_song.mark = n;
   show_song_info();
   show_progress_bar();
 }
 
 void set_tempo(float f) {
-  current_song.tempo = MAX(0, f);
-  audio_data.sf_info.samplerate *= current_song.tempo;
+  c_song.tempo = MAX(0, f);
+  a_dat.sf_info.samplerate *= c_song.tempo;
   show_song_info();
 }
 
@@ -210,7 +212,7 @@ void show_help() {
 void show_greeting() {
   printw_center_x(1, max_col, welcome_msg);
 
-  if (current_song.name == NULL) {
+  if (c_song.name == NULL) {
     printw("Type ");
     addch('o' | A_BOLD);
     printw(" to open an audio file.\n");
@@ -250,25 +252,25 @@ void* show_main(void* args) {
 
     switch(ch) {
       case '\'':
-        seek_mseconds(current_song.mark);
+        seek_mseconds(c_song.mark);
         break;
       case '<':
-        set_tempo(current_song.tempo - TEMPO_D);
+        set_tempo(c_song.tempo - TEMPO_D);
         break;
       case '>':
-        set_tempo(current_song.tempo + TEMPO_D);
+        set_tempo(c_song.tempo + TEMPO_D);
         break;
       case 'h':
         show_help();
         break;
       case 'j':
-        seek_mseconds(current_song.time - TIME_SKIP_D);
+        seek_mseconds(c_song.time - TIME_SKIP_D);
         break;
       case 'k':
-        seek_mseconds(current_song.time + TIME_SKIP_D);
+        seek_mseconds(c_song.time + TIME_SKIP_D);
         break;
       case 'm':
-        set_mark(current_song.time);
+        set_mark(c_song.time);
         break;
       case 'p':
         toggle_pause();
@@ -286,12 +288,12 @@ void* show_main(void* args) {
 // progress is between 0 and 1.
 void show_progress_bar() {
   int pos = 0;
-  int mark_pos = (float) current_song.mark / current_song.len * pbar.len;
+  int mark_pos = (float) c_song.mark / c_song.len * pbar.len;
 
   pbar.col = max_col / 4;
   pbar.row = max_row / 2;
   pbar.len = max_col / 2;
-  pbar.progress = (float) current_song.time / current_song.len;
+  pbar.progress = (float) c_song.time / c_song.len;
 
   mvaddch(pbar.row, pbar.col, '[');
 
@@ -303,7 +305,7 @@ void show_progress_bar() {
     mvaddch(pbar.row, pbar.col+pos, ' ');
   }
 
-  if (current_song.mark != 0) {
+  if (c_song.mark != 0) {
     mvaddch(pbar.row, pbar.col + mark_pos + 1, '*');
   }
 
@@ -313,21 +315,21 @@ void show_progress_bar() {
 }
 
 void show_song_info() {
-  int curr_seconds = current_song.time / MILLIS;
-  int mark_seconds = current_song.mark / MILLIS;
-  int total_seconds = current_song.len / MILLIS;
+  int curr_seconds = c_song.time / MILLIS;
+  int mark_seconds = c_song.mark / MILLIS;
+  int total_seconds = c_song.len / MILLIS;
 
   char* state_str = audio_states[pause_state];
 
   printw_center_x(max_row / 2 - 2, max_col, "%s - %-7s",
-                  basename(current_song.name), state_str);
+                  basename(c_song.name), state_str);
 
   printw_center_x(max_row / 2 + 2, max_col, "%d:%02d / %d:%02d | x%.2f",
                   curr_seconds / 60, curr_seconds % 60,
                   total_seconds / 60, total_seconds % 60,
-                  current_song.tempo);
+                  c_song.tempo);
 
-  if (current_song.mark != 0) {
+  if (c_song.mark != 0) {
     printw_center_x(max_row / 2 + 6, max_col, "(*) mark set at %d:%02d",
                     mark_seconds / 60, mark_seconds % 60);
   }
@@ -336,36 +338,37 @@ void show_song_info() {
 void* init_audio(void* args) {
   PaStreamParameters out_params;
 
-  audio_data.pos = 0;
-  audio_data.sf_info.format = 0;
-  audio_data.sndfile = sf_open(current_song.name, SFM_READ, &audio_data.sf_info);
+  a_dat.pos = 0;
+  a_dat.sf_info.format = 0;
+  a_dat.sndfile = sf_open(c_song.name, SFM_READ, &a_dat.sf_info);
 
-  if (!audio_data.sndfile) {
-    fprintf(stderr, "Couldn't open file %s\n", current_song.name);
+  if (!a_dat.sndfile) {
+    fprintf(stderr, "Couldn't open file %s\n", c_song.name);
     return NULL;
   }
 
-  current_song.len = MILLIS * (float) audio_data.sf_info.frames / audio_data.sf_info.samplerate;
+  c_song.len = (MILLIS * (float) a_dat.sf_info.frames)
+    / a_dat.sf_info.samplerate;
 
   Pa_Initialize();
   pa_on = 1;
 
   out_params.device = Pa_GetDefaultOutputDevice();
-  out_params.channelCount = audio_data.sf_info.channels;
+  out_params.channelCount = a_dat.sf_info.channels;
   out_params.suggestedLatency = 0.2;
   out_params.sampleFormat = paInt32;
   out_params.hostApiSpecificStreamInfo = 0;
 
-  Pa_OpenStream(&stream, 0, &out_params, audio_data.sf_info.samplerate,
+  Pa_OpenStream(&stream, 0, &out_params, a_dat.sf_info.samplerate,
                       paFramesPerBufferUnspecified, paNoFlag, pa_callback,
-                      &audio_data);
+                      &a_dat);
 
   Pa_StartStream(stream);
 
   while (!quit) {
     if (Pa_IsStreamActive(stream)) {
       Pa_Sleep(SLEEP_MILLIS_D);
-      current_song.time += SLEEP_MILLIS_D;
+      c_song.time += SLEEP_MILLIS_D;
 
       if (!in_help) {
         show_progress_bar();
@@ -377,7 +380,7 @@ void* init_audio(void* args) {
   Pa_StopStream(stream);
   quit = 1;
 
-  return audio_data.sndfile;
+  return a_dat.sndfile;
 }
 
 void init_curses() {
@@ -406,8 +409,8 @@ int main(int argc, char* argv[])
   if (argc == 2) {
     char* audio_name = strdup(argv[1]);
 
-    current_song.name = audio_name;
-    current_song.tempo = 1.0;
+    c_song.name = audio_name;
+    c_song.tempo = 1.0;
   } else {
     fprintf(stderr, "cscribe <audio_file>\n");
     exit(1);
