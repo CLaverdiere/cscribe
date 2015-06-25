@@ -1,6 +1,6 @@
 // cscribe.c - Chris Laverdiere 2015
 
-// TODO find why some songs too loud.
+// TODO find why some songs too loud (ogg).
 // TODO investigate how to change tempo (ffmpeg / libav)?
 // TODO add picture to README.
 // TODO configure script / AUR
@@ -8,7 +8,6 @@
 
 // BUG song loops at end.
 // BUG pausing delays with mark updates.
-// BUG create marks, delete until none, create another (segfault).
 
 #define _GNU_SOURCE
 
@@ -21,7 +20,10 @@
 #define TEMPO_D .05
 #define TIME_SKIP_D 2000
 
+// Limits
 #define MAX_MARKS 50
+
+#define DEBUG 0
 
 
 #include <libgen.h>
@@ -66,29 +68,29 @@ enum {
 } pause_state;
 
 
+int active_mark_time();
+void add_mark(int);
 void cleanup();
-
+void delete_mark(int);
 void* init_audio();
 void init_curses();
-
-void toggle_pause();
-void seek_mseconds(int);
-
-int active_mark_time();
 int mark_time(int);
-void add_mark(int);
-void delete_mark(int);
-void set_active_mark(int);
+int pa_callback(const void*, void*, unsigned long, const
+                PaStreamCallbackTimeInfo*, PaStreamCallbackFlags, void*);
+void pa_error(PaError);
+void printw_center_x(int, int, char*, ...);
+void seek_mseconds(int);
 void set_mark(int);
-
 void set_tempo(float);
-
-void show_help();
+void show_debug();
 void show_greeting();
+void show_help();
 void* show_main();
 void show_modeline();
 void show_progress_bar();
 void show_song_info();
+void toggle_pause();
+
 
 static int max_col, max_row;
 static int quit, in_help, pa_on, curses_on;
@@ -99,7 +101,136 @@ static PaStream *stream;
 static char* welcome_msg = "Welcome to cscribe!\n\n";
 static char* audio_states[] = {"Playing", "Paused"};
 
-static int pa_callback(const void *input_buf,
+
+// Get the time in milliseconds of the current (active) mark.
+int active_mark_time() {
+  return mark_time(c_song.active_mark);
+}
+
+// Marks are sorted so we can retain next / previous mark data.
+// TODO if this gets slow, use bsearch / llist.
+void add_mark(int n) {
+  int* base;
+  int m_idx = 0;
+
+  if (n == active_mark_time() || c_song.num_marks >= MAX_MARKS)
+    return;
+
+  while (c_song.marks[m_idx] < n && c_song.marks[m_idx] != 0)
+    m_idx++;
+
+  base = c_song.marks + m_idx;
+
+  memmove(base + 1, base, (c_song.num_marks - m_idx) * sizeof(int));
+
+  c_song.num_marks++;
+  base[0] = n;
+  c_song.active_mark = m_idx;
+}
+
+// Called on program exit.
+void cleanup() {
+  if (pa_on)
+    Pa_Terminate();
+
+  if (curses_on)
+    endwin();
+}
+
+// Delete the ith mark.
+void delete_mark(int i) {
+  int* base = c_song.marks + c_song.active_mark;
+
+  if (c_song.num_marks == 0)
+    return;
+
+  c_song.marks[i] = 0;
+
+  memmove(base, base + 1,
+          (c_song.num_marks - c_song.active_mark - 1) * sizeof(int));
+
+  c_song.num_marks--;
+  c_song.active_mark--;
+
+  if (i > 0)
+    set_mark(c_song.active_mark);
+
+  return;
+}
+
+// Handle opening the audio stream.
+void* init_audio(void* args) {
+  PaStreamParameters out_params;
+
+  a_dat.pos = 0;
+  a_dat.sf_info.format = 0;
+  a_dat.sndfile = sf_open(c_song.name, SFM_READ, &a_dat.sf_info);
+
+  if (!a_dat.sndfile) {
+    fprintf(stderr, "Couldn't open file %s\n", c_song.name);
+    return NULL;
+  }
+
+  c_song.len = (MILLIS * (float) a_dat.sf_info.frames)
+    / a_dat.sf_info.samplerate;
+
+  Pa_Initialize();
+  pa_on = 1;
+
+  out_params.device = Pa_GetDefaultOutputDevice();
+  out_params.channelCount = a_dat.sf_info.channels;
+  out_params.suggestedLatency = 0.2;
+  out_params.sampleFormat = paInt32;
+  out_params.hostApiSpecificStreamInfo = 0;
+
+  Pa_OpenStream(&stream, 0, &out_params, a_dat.sf_info.samplerate,
+                      paFramesPerBufferUnspecified, paNoFlag, pa_callback,
+                      &a_dat);
+
+  Pa_StartStream(stream);
+
+  while (!quit) {
+    if (Pa_IsStreamActive(stream) && c_song.time <= c_song.len) {
+      Pa_Sleep(SLEEP_MILLIS_D);
+      c_song.time += SLEEP_MILLIS_D;
+
+      if (!in_help) {
+        show_progress_bar();
+        show_song_info();
+
+        if (DEBUG)
+          show_debug();
+      }
+    }
+  }
+
+  Pa_StopStream(stream);
+  quit = 1;
+
+  return a_dat.sndfile;
+}
+
+// Handle curses setup and window options.
+void init_curses() {
+  initscr();
+  cbreak();
+  noecho();
+  curs_set(0);
+  keypad(stdscr, TRUE);
+  getmaxyx(stdscr, max_row, max_col);
+
+  curses_on = 1;
+}
+
+// Get the time in milliseconds of the ith mark.
+int mark_time(int i) {
+  if (i < 0)
+    return -1;
+
+  return c_song.marks[i];
+}
+
+int pa_callback(const void *input_buf,
                        void *output_buf,
                        unsigned long frame_cnt,
                        const PaStreamCallbackTimeInfo* time_info,
@@ -155,18 +286,6 @@ void printw_center_x(int row, int max_col, char* fmt, ...) {
   free(str);
 }
 
-void toggle_pause() {
-  if (Pa_IsStreamStopped(stream)) {
-    pause_state = PLAYING;
-    Pa_StartStream(stream);
-  } else {
-    pause_state = PAUSED;
-    Pa_StopStream(stream);
-  }
-
-  show_song_info();
-}
-
 // Seek to n milliseconds in the current song.
 // TODO use a callback?
 void seek_mseconds(int n) {
@@ -189,59 +308,6 @@ void seek_mseconds(int n) {
   show_song_info();
 }
 
-// Marks are sorted so we can retain next / previous mark data.
-// TODO if this gets slow, use bsearch / llist.
-void add_mark(int n) {
-  int* base;
-  int m_idx = 0;
-
-  if (n == active_mark_time() || c_song.num_marks >= MAX_MARKS)
-    return;
-
-  while (c_song.marks[m_idx] < n && c_song.marks[m_idx] != 0)
-    m_idx++;
-
-  base = c_song.marks + m_idx;
-
-  memmove(base + 1, base, (c_song.num_marks - m_idx) * sizeof(int));
-
-  c_song.num_marks++;
-  base[0] = n;
-  c_song.active_mark = m_idx;
-}
-
-// Get the time in milliseconds of the ith mark.
-int mark_time(int i) {
-  if (i < 0)
-    return -1;
-
-  return c_song.marks[i];
-}
-
-// Get the time in milliseconds of the current (active) mark.
-int active_mark_time() {
-  return mark_time(c_song.active_mark);
-}
-
-// Delete the ith mark.
-void delete_mark(int i) {
-  int* base = c_song.marks + c_song.active_mark;
-
-  if (c_song.num_marks == 0)
-    return;
-
-  memmove(base, base + 1,
-          (c_song.num_marks - c_song.active_mark - 1) * sizeof(int));
-
-  c_song.num_marks--;
-  c_song.active_mark--;
-
-  if (i > 0)
-    set_mark(c_song.active_mark);
-
-  return;
-}
-
 // Set the current mark to the ith mark.
 void set_mark(int i) {
   c_song.active_mark = MIN(MAX(i, 0), c_song.num_marks - 1);
@@ -253,6 +319,25 @@ void set_tempo(float f) {
   c_song.tempo = MAX(0, f);
   a_dat.sf_info.samplerate *= c_song.tempo;
   show_song_info();
+}
+
+void show_debug() {
+  mvprintw(0, 0, "\n");
+  mvprintw(1, 0, "# marks: %d\n", c_song.num_marks);
+  mvprintw(2, 0, "active mark: %d\n", c_song.active_mark);
+}
+
+// The greeting displayed at the top of the window.
+void show_greeting() {
+  printw_center_x(1, max_col, welcome_msg);
+
+  if (c_song.name == NULL) {
+    printw("Type ");
+    addch('o' | A_BOLD);
+    printw(" to open an audio file.\n");
+  } else {
+    show_song_info();
+  }
 }
 
 // Prints a help menu with all commands.
@@ -287,24 +372,6 @@ void show_help() {
 
   in_help = 0;
   show_main();
-}
-
-// The greeting displayed at the top of the window.
-void show_greeting() {
-  printw_center_x(1, max_col, welcome_msg);
-
-  if (c_song.name == NULL) {
-    printw("Type ");
-    addch('o' | A_BOLD);
-    printw(" to open an audio file.\n");
-  } else {
-    show_song_info();
-  }
-}
-
-// The modeline at the bottom of the window.
-void show_modeline() {
-  mvprintw(max_row - 1, 0, mode_line);
 }
 
 // Displays the main screen.
@@ -392,6 +459,11 @@ void* show_main(void* args) {
   return NULL;
 }
 
+// The modeline at the bottom of the window.
+void show_modeline() {
+  mvprintw(max_row - 1, 0, mode_line);
+}
+
 // Places a progress bar starting at row and col.
 // progress is between 0 and 1.
 void show_progress_bar() {
@@ -439,7 +511,7 @@ void show_song_info() {
                   c_song.tempo);
 
   // TODO split into show_mark_info, refactor, single line prev/next.
-  if (active_mark_time() != 0) {
+  if (active_mark_time() >= 0) {
     mark_seconds = active_mark_time() / MILLIS;
     printw_center_x(max_row / 2 + 6, max_col, "(*) mark set at %d:%02d",
                     mark_seconds / 60, mark_seconds % 60);
@@ -460,74 +532,16 @@ void show_song_info() {
   }
 }
 
-// Handle opening the audio stream.
-void* init_audio(void* args) {
-  PaStreamParameters out_params;
-
-  a_dat.pos = 0;
-  a_dat.sf_info.format = 0;
-  a_dat.sndfile = sf_open(c_song.name, SFM_READ, &a_dat.sf_info);
-
-  if (!a_dat.sndfile) {
-    fprintf(stderr, "Couldn't open file %s\n", c_song.name);
-    return NULL;
+void toggle_pause() {
+  if (Pa_IsStreamStopped(stream)) {
+    pause_state = PLAYING;
+    Pa_StartStream(stream);
+  } else {
+    pause_state = PAUSED;
+    Pa_StopStream(stream);
   }
 
-  c_song.len = (MILLIS * (float) a_dat.sf_info.frames)
-    / a_dat.sf_info.samplerate;
-
-  Pa_Initialize();
-  pa_on = 1;
-
-  out_params.device = Pa_GetDefaultOutputDevice();
-  out_params.channelCount = a_dat.sf_info.channels;
-  out_params.suggestedLatency = 0.2;
-  out_params.sampleFormat = paInt32;
-  out_params.hostApiSpecificStreamInfo = 0;
-
-  Pa_OpenStream(&stream, 0, &out_params, a_dat.sf_info.samplerate,
-                      paFramesPerBufferUnspecified, paNoFlag, pa_callback,
-                      &a_dat);
-
-  Pa_StartStream(stream);
-
-  while (!quit) {
-    if (Pa_IsStreamActive(stream) && c_song.time <= c_song.len) {
-      Pa_Sleep(SLEEP_MILLIS_D);
-      c_song.time += SLEEP_MILLIS_D;
-
-      if (!in_help) {
-        show_progress_bar();
-        show_song_info();
-      }
-    }
-  }
-
-  Pa_StopStream(stream);
-  quit = 1;
-
-  return a_dat.sndfile;
-}
-
-// Handle curses setup and window options.
-void init_curses() {
-  initscr();
-  cbreak();
-  noecho();
-  curs_set(0);
-  keypad(stdscr, TRUE);
-  getmaxyx(stdscr, max_row, max_col);
-
-  curses_on = 1;
-}
-
-// Called on program exit.
-void cleanup() {
-  if (pa_on)
-    Pa_Terminate();
-
-  if (curses_on)
-    endwin();
+  show_song_info();
 }
 
 int main(int argc, char* argv[])
