@@ -4,6 +4,10 @@
 // TODO investigate how to change tempo (ffmpeg / libav)?
 // TODO add picture to README.
 // TODO configure script / AUR
+// TODO error handling
+
+// BUG song loops at end.
+// BUG pausing delays with mark updates.
 
 #define _GNU_SOURCE
 
@@ -15,6 +19,8 @@
 #define SLEEP_MILLIS_D 100
 #define TEMPO_D .05
 #define TIME_SKIP_D 2000
+
+#define MAX_MARKS 50
 
 
 #include <libgen.h>
@@ -46,7 +52,9 @@ struct progress_bar {
 struct song {
   int len;
   int time;
-  int mark;
+  int active_mark;
+  int num_marks;
+  int* marks;
   float tempo;
   char* name;
 } c_song;
@@ -64,7 +72,12 @@ void init_curses();
 
 void toggle_pause();
 void seek_mseconds(int);
-void set_mark(int);
+
+int active_mark_time();
+int mark_time(int i);
+void add_mark(int);
+void delete_mark(int);
+void set_active_mark(int);
 void set_tempo(float);
 
 void show_help();
@@ -172,8 +185,41 @@ void seek_mseconds(int n) {
   show_song_info();
 }
 
-void set_mark(int n) {
-  c_song.mark = n;
+// Marks are sorted so we can retain next / previous mark data.
+void add_mark(int n) {
+  int* base;
+  int m_idx = 0;
+
+  if (n == active_mark_time() || c_song.num_marks >= MAX_MARKS)
+    return;
+
+  while (c_song.marks[m_idx] < n && c_song.marks[m_idx] != 0)
+    m_idx++;
+
+  base = c_song.marks + m_idx;
+
+  memmove(base + 1, base, (c_song.num_marks - m_idx) * sizeof(int));
+
+  c_song.num_marks++;
+  base[0] = n;
+  c_song.active_mark = m_idx;
+}
+
+int mark_time(int i) {
+  return c_song.marks[i];
+}
+
+int active_mark_time() {
+  return mark_time(c_song.active_mark);
+}
+
+// TODO
+void delete_mark(int i) {
+  return;
+}
+
+void set_mark(int i) {
+  c_song.active_mark = MIN(MAX(i, 0), c_song.num_marks - 1);
   show_song_info();
   show_progress_bar();
 }
@@ -191,16 +237,24 @@ void show_help() {
 
   printw_center_x(1, max_col, "cscribe help:\n\n");
 
+  // TODO may have to scroll on smaller screens.
   printw("': Jump to mark\n");
   printw("<: Decrease tempo\n");
   printw(">: Increase tempo\n");
-  printw("h: Show / exit this help menu\n");
+  printw("?: Help menu toggle\n");
+  printw("d: Delete current mark\n"); // TODO
+  printw("G: End of song\n");
+  printw("H: End of song\n");
+  printw("L: Start of song\n");
+  printw("M: Middle of song\n");
+  printw("gg: Start of song\n");
+  printw("h: Previous mark\n"); // TODO
   printw("j: Back 2 seconds\n");
   printw("k: Forward 2 seconds\n");
+  printw("l: Next mark\n"); // TODO
   printw("m: Create mark\n");
-  printw("o: Open file\n");
   printw("p: Pause\n");
-  printw("q: Quit cscribe\n");
+  printw("q: Quit\n");
 
   refresh();
 
@@ -237,7 +291,7 @@ void* show_main(void* args) {
 
   // TODO We should use a separate window for the modeline.
   if (mode_line == NULL) {
-    mode_line = "Type h for the list of all commands.";
+    mode_line = "Press ? for the list of all commands.";
   }
 
   clear();
@@ -253,7 +307,7 @@ void* show_main(void* args) {
 
     switch(ch) {
       case '\'':
-        seek_mseconds(c_song.mark);
+        seek_mseconds(active_mark_time());
         break;
       case '<':
         set_tempo(c_song.tempo - TEMPO_D);
@@ -261,8 +315,24 @@ void* show_main(void* args) {
       case '>':
         set_tempo(c_song.tempo + TEMPO_D);
         break;
-      case 'h':
+      case '?':
         show_help();
+        break;
+      case 'd':
+        delete_mark(c_song.active_mark);
+      case 'g':
+        switch((ch = getch())) {
+          case 'g':
+            seek_mseconds(0);
+            break;
+        }
+        break;
+      case 'G':
+      case 'H':
+        seek_mseconds(c_song.len);
+        break;
+      case 'h':
+        set_mark(c_song.active_mark - 1);
         break;
       case 'j':
         seek_mseconds(c_song.time - TIME_SKIP_D);
@@ -270,8 +340,17 @@ void* show_main(void* args) {
       case 'k':
         seek_mseconds(c_song.time + TIME_SKIP_D);
         break;
+      case 'l':
+        set_mark(c_song.active_mark + 1);
+        break;
+      case 'L':
+        seek_mseconds(0);
+        break;
       case 'm':
-        set_mark(c_song.time);
+        add_mark(c_song.time);
+        break;
+      case 'M':
+        seek_mseconds(c_song.len / 2);
         break;
       case 'p':
         toggle_pause();
@@ -289,7 +368,7 @@ void* show_main(void* args) {
 // progress is between 0 and 1.
 void show_progress_bar() {
   int pos = 0;
-  int mark_pos = (float) c_song.mark / c_song.len * pbar.len;
+  int mark_pos = (float) active_mark_time() / c_song.len * pbar.len;
 
   pbar.col = max_col / 4;
   pbar.row = max_row / 2;
@@ -306,7 +385,7 @@ void show_progress_bar() {
     mvaddch(pbar.row, pbar.col+pos, ' ');
   }
 
-  if (c_song.mark != 0) {
+  if (active_mark_time() != 0) {
     mvaddch(pbar.row, pbar.col + mark_pos + 1, '*');
   }
 
@@ -317,8 +396,8 @@ void show_progress_bar() {
 
 void show_song_info() {
   int curr_seconds = c_song.time / MILLIS;
-  int mark_seconds = c_song.mark / MILLIS;
   int total_seconds = c_song.len / MILLIS;
+  int mark_seconds, p_mark_seconds, n_mark_seconds;
 
   char* state_str = audio_states[pause_state];
 
@@ -330,9 +409,25 @@ void show_song_info() {
                   total_seconds / 60, total_seconds % 60,
                   c_song.tempo);
 
-  if (c_song.mark != 0) {
+  // TODO split into show_mark_info, refactor, single line prev/next.
+  if (active_mark_time() != 0) {
+    mark_seconds = active_mark_time() / MILLIS;
     printw_center_x(max_row / 2 + 6, max_col, "(*) mark set at %d:%02d",
                     mark_seconds / 60, mark_seconds % 60);
+  }
+
+  if (c_song.active_mark > 0) {
+    p_mark_seconds = mark_time(c_song.active_mark - 1) / MILLIS;
+
+    printw_center_x(max_row / 2 + 7, max_col, "prev: %d:%02d",
+                    p_mark_seconds / 60, p_mark_seconds % 60);
+  }
+
+  if (c_song.active_mark != c_song.num_marks - 1) {
+    n_mark_seconds = mark_time(c_song.active_mark + 1) / MILLIS;
+
+    printw_center_x(max_row / 2 + 8, max_col, "next: %d:%02d",
+                    n_mark_seconds / 60, n_mark_seconds % 60);
   }
 }
 
@@ -367,7 +462,7 @@ void* init_audio(void* args) {
   Pa_StartStream(stream);
 
   while (!quit) {
-    if (Pa_IsStreamActive(stream)) {
+    if (Pa_IsStreamActive(stream) && c_song.time <= c_song.len) {
       Pa_Sleep(SLEEP_MILLIS_D);
       c_song.time += SLEEP_MILLIS_D;
 
@@ -412,6 +507,9 @@ int main(int argc, char* argv[])
 
     c_song.name = audio_name;
     c_song.tempo = 1.0;
+    c_song.marks = calloc(MAX_MARKS, sizeof(int));
+    c_song.active_mark = -1;
+
   } else {
     fprintf(stderr, "cscribe <audio_file>\n");
     exit(1);
