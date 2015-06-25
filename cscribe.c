@@ -154,8 +154,16 @@ void seek_mseconds(int n) {
 
   current_song.time = clamped_seconds;
 
+  if (pause_state == PLAYING) {
+    Pa_StopStream(stream);
+  }
+
   audio_data.pos = (clamped_seconds / MILLIS) * audio_data.sf_info.samplerate;
   sf_seek(audio_data.sndfile, audio_data.pos, SEEK_SET);
+
+  if (pause_state == PLAYING) {
+    Pa_StartStream(stream);
+  }
 
   show_progress_bar();
   show_song_info();
@@ -355,7 +363,7 @@ void* init_audio(void* args) {
   Pa_StartStream(stream);
 
   while (!quit) {
-    if (Pa_IsStreamActive(stream) == 1) {
+    if (Pa_IsStreamActive(stream)) {
       Pa_Sleep(SLEEP_MILLIS_D);
       current_song.time += SLEEP_MILLIS_D;
 
