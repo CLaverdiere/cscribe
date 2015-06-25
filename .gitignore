@@ -1,5 +1,6 @@
 cscribe
 *.flac
+*.wav
 *.ogg
 *TAGS
 GPATH

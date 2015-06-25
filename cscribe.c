@@ -8,6 +8,7 @@
 
 // BUG song loops at end.
 // BUG pausing delays with mark updates.
+// BUG create marks, delete until none, create another (segfault).
 
 #define _GNU_SOURCE
 
@@ -74,10 +75,12 @@ void toggle_pause();
 void seek_mseconds(int);
 
 int active_mark_time();
-int mark_time(int i);
+int mark_time(int);
 void add_mark(int);
 void delete_mark(int);
 void set_active_mark(int);
+void set_mark(int);
+
 void set_tempo(float);
 
 void show_help();
@@ -164,6 +167,7 @@ void toggle_pause() {
   show_song_info();
 }
 
+// Seek to n milliseconds in the current song.
 // TODO use a callback?
 void seek_mseconds(int n) {
   int clamped_seconds = MIN(MAX(n, 0), c_song.len);
@@ -186,6 +190,7 @@ void seek_mseconds(int n) {
 }
 
 // Marks are sorted so we can retain next / previous mark data.
+// TODO if this gets slow, use bsearch / llist.
 void add_mark(int n) {
   int* base;
   int m_idx = 0;
@@ -205,19 +210,39 @@ void add_mark(int n) {
   c_song.active_mark = m_idx;
 }
 
+// Get the time in milliseconds of the ith mark.
 int mark_time(int i) {
+  if (i < 0)
+    return -1;
+
   return c_song.marks[i];
 }
 
+// Get the time in milliseconds of the current (active) mark.
 int active_mark_time() {
   return mark_time(c_song.active_mark);
 }
 
-// TODO
+// Delete the ith mark.
 void delete_mark(int i) {
+  int* base = c_song.marks + c_song.active_mark;
+
+  if (c_song.num_marks == 0)
+    return;
+
+  memmove(base, base + 1,
+          (c_song.num_marks - c_song.active_mark - 1) * sizeof(int));
+
+  c_song.num_marks--;
+  c_song.active_mark--;
+
+  if (i > 0)
+    set_mark(c_song.active_mark);
+
   return;
 }
 
+// Set the current mark to the ith mark.
 void set_mark(int i) {
   c_song.active_mark = MIN(MAX(i, 0), c_song.num_marks - 1);
   show_song_info();
@@ -243,16 +268,16 @@ void show_help() {
   printw(">: Increase tempo\n");
   printw("?: Help menu toggle\n");
   printw("d: Delete current mark\n"); // TODO
-  printw("G: End of song\n");
-  printw("H: End of song\n");
-  printw("L: Start of song\n");
-  printw("M: Middle of song\n");
   printw("gg: Start of song\n");
+  printw("G: End of song\n");
   printw("h: Previous mark\n"); // TODO
+  printw("H: End of song\n");
   printw("j: Back 2 seconds\n");
   printw("k: Forward 2 seconds\n");
   printw("l: Next mark\n"); // TODO
+  printw("L: Start of song\n");
   printw("m: Create mark\n");
+  printw("M: Middle of song\n");
   printw("p: Pause\n");
   printw("q: Quit\n");
 
@@ -264,6 +289,7 @@ void show_help() {
   show_main();
 }
 
+// The greeting displayed at the top of the window.
 void show_greeting() {
   printw_center_x(1, max_col, welcome_msg);
 
@@ -276,6 +302,7 @@ void show_greeting() {
   }
 }
 
+// The modeline at the bottom of the window.
 void show_modeline() {
   mvprintw(max_row - 1, 0, mode_line);
 }
@@ -320,6 +347,7 @@ void* show_main(void* args) {
         break;
       case 'd':
         delete_mark(c_song.active_mark);
+        break;
       case 'g':
         switch((ch = getch())) {
           case 'g':
@@ -385,7 +413,7 @@ void show_progress_bar() {
     mvaddch(pbar.row, pbar.col+pos, ' ');
   }
 
-  if (active_mark_time() != 0) {
+  if (active_mark_time() > 0) {
     mvaddch(pbar.row, pbar.col + mark_pos + 1, '*');
   }
 
@@ -394,6 +422,7 @@ void show_progress_bar() {
   refresh();
 }
 
+// Song information (progress, songname, length)
 void show_song_info() {
   int curr_seconds = c_song.time / MILLIS;
   int total_seconds = c_song.len / MILLIS;
@@ -431,6 +460,7 @@ void show_song_info() {
   }
 }
 
+// Handle opening the audio stream.
 void* init_audio(void* args) {
   PaStreamParameters out_params;
 
@@ -479,6 +509,7 @@ void* init_audio(void* args) {
   return a_dat.sndfile;
 }
 
+// Handle curses setup and window options.
 void init_curses() {
   initscr();
   cbreak();
@@ -490,9 +521,13 @@ void init_curses() {
   curses_on = 1;
 }
 
+// Called on program exit.
 void cleanup() {
-  if (pa_on) Pa_Terminate();
-  if (curses_on) endwin();
+  if (pa_on)
+    Pa_Terminate();
+
+  if (curses_on)
+    endwin();
 }
 
 int main(int argc, char* argv[])
